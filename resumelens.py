@@ -1,220 +1,266 @@
 import streamlit as st
-import mysql.connector
-import requests
-import json
+import pdfplumber
 import re
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
-st.set_page_config(page_title="ResumeLens · DB Query", page_icon="🔍", layout="wide")
+# ── Page config ────────────────────────────────────────────────────────────────
+st.set_page_config(
+    page_title="ResumeLens · Resume Screener",
+    page_icon="🔍",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
+# ── Custom CSS ─────────────────────────────────────────────────────────────────
 st.markdown("""
 <style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Mono&display=swap');
+
 html, body, [data-testid="stAppViewContainer"] {
     background: #0d1117;
     color: #e6edf3;
+    font-family: 'Inter', sans-serif;
 }
 #MainMenu, footer, header { visibility: hidden; }
 [data-testid="stDecoration"] { display: none; }
-.block-container { padding: 2rem 2.5rem !important; }
+.block-container { padding: 2rem 3rem !important; max-width: 1400px !important; }
 
-.title {
-    text-align: center;
-    font-size: 2rem;
-    font-weight: bold;
-    color: #58a6ff;
-    margin-bottom: 0.2rem;
+.hero { text-align: center; padding: 2rem 1rem 1.5rem; margin-bottom: 2rem; }
+.hero-title {
+    font-size: 2.4rem; font-weight: 700;
+    background: linear-gradient(90deg, #58a6ff, #bc8cff);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    margin-bottom: 0.3rem;
 }
-.subtitle {
-    text-align: center;
-    color: #8b949e;
-    font-size: 0.85rem;
-    margin-bottom: 2rem;
+.hero-sub {
+    color: #8b949e; font-size: 0.95rem;
+    font-family: 'Space Mono', monospace; letter-spacing: 0.05em;
 }
-.sql-box {
-    background: #161b22;
-    border: 1px solid #30363d;
-    border-radius: 8px;
-    padding: 1rem;
-    font-family: monospace;
-    font-size: 0.85rem;
-    color: #79c0ff;
-    white-space: pre-wrap;
-    margin-bottom: 1rem;
+.card {
+    background: #161b22; border: 1px solid #30363d;
+    border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem;
 }
-.explain-box {
-    background: #0f2a1a;
-    border: 1px solid #238636;
-    border-radius: 8px;
-    padding: 1rem;
-    color: #aff5b4;
-    font-size: 0.95rem;
-    margin-bottom: 1rem;
+.card-title {
+    font-size: 0.8rem; font-weight: 600; text-transform: uppercase;
+    letter-spacing: 0.1em; color: #8b949e; margin-bottom: 1rem;
+}
+.result-fit {
+    background: linear-gradient(135deg, #0f2a1a, #1a3a2a);
+    border: 2px solid #238636; border-radius: 14px;
+    padding: 2rem; text-align: center; margin-bottom: 1.5rem;
+}
+.result-notfit {
+    background: linear-gradient(135deg, #2a0f0f, #3a1a1a);
+    border: 2px solid #da3633; border-radius: 14px;
+    padding: 2rem; text-align: center; margin-bottom: 1.5rem;
+}
+.result-label { font-size: 2rem; font-weight: 700; margin-bottom: 0.3rem; }
+.result-sub { font-size: 0.9rem; color: #8b949e; }
+
+.score-bar-bg {
+    background: #21262d; border-radius: 100px;
+    height: 12px; margin: 0.5rem 0 1.5rem; overflow: hidden;
+}
+.score-bar-fill { height: 100%; border-radius: 100px; }
+
+.skill-chip {
+    display: inline-block; padding: 0.25rem 0.75rem;
+    border-radius: 100px; font-size: 0.78rem;
+    font-family: 'Space Mono', monospace; margin: 0.2rem;
+}
+.chip-match { background: #0f2a1a; border: 1px solid #238636; color: #aff5b4; }
+.chip-missing { background: #2a0f0f; border: 1px solid #da3633; color: #ffa198; }
+
+.suggestion-item {
+    background: #1c2128; border-left: 3px solid #bc8cff;
+    border-radius: 0 8px 8px 0; padding: 0.6rem 1rem;
+    margin-bottom: 0.5rem; font-size: 0.88rem; color: #cdd9e5;
+}
+.metric-row { display: flex; gap: 1rem; margin-bottom: 1.5rem; }
+.metric-box {
+    flex: 1; background: #1c2128; border: 1px solid #30363d;
+    border-radius: 10px; padding: 1rem; text-align: center;
+}
+.metric-val { font-size: 1.6rem; font-weight: 700; color: #58a6ff; }
+.metric-label {
+    font-size: 0.72rem; color: #8b949e;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-top: 0.2rem;
 }
 .stButton > button {
-    background: #238636 !important;
-    color: white !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-weight: bold !important;
-    padding: 0.5rem 1.5rem !important;
+    background: linear-gradient(135deg, #238636, #2ea043) !important;
+    color: white !important; border: none !important;
+    border-radius: 10px !important; font-weight: 600 !important;
+    font-size: 1rem !important; padding: 0.6rem 2rem !important;
+    width: 100% !important;
 }
-.stButton > button:hover {
-    background: #2ea043 !important;
+.stButton > button:hover { opacity: 0.88 !important; }
+[data-testid="stFileUploader"] {
+    border: 2px dashed #30363d !important;
+    border-radius: 12px !important; background: #1c2128 !important;
+}
+textarea {
+    background: #1c2128 !important; border: 1px solid #30363d !important;
+    border-radius: 10px !important; color: #e6edf3 !important;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Config ────────────────────────────────────────────────────────────────────
-LLAMA_URL = "http://localhost:8081/v1/chat/completions"
+# ── Hero ───────────────────────────────────────────────────────────────────────
+st.markdown("""
+<div class="hero">
+  <div class="hero-title">🔍 ResumeLens</div>
+  <div class="hero-sub">// AI-POWERED RESUME SCREENING · INSTANT JOB FIT ANALYSIS</div>
+</div>
+""", unsafe_allow_html=True)
 
-# ── Title ─────────────────────────────────────────────────────────────────────
-st.markdown('<div class="title">🔍 ResumeLens · DB Query</div>', unsafe_allow_html=True)
-st.markdown('<div class="subtitle">Ask questions about your database in plain English</div>', unsafe_allow_html=True)
+# ── Helper functions ───────────────────────────────────────────────────────────
 
-# ── Sidebar — DB Config ───────────────────────────────────────────────────────
-with st.sidebar:
-    st.markdown("### ⚙️ Database Config")
-    db_host = st.text_input("Host",     value="localhost")
-    db_user = st.text_input("User",     value="root")
-    db_pass = st.text_input("Password", value="", type="password")
-    db_name = st.text_input("Database", value="")
-    st.markdown("---")
-    st.markdown("### 🤖 Ollama Config")
-    llama_url = st.text_input("Ollama URL", value=LLAMA_URL)
+def extract_text_from_pdf(file) -> str:
+    text = ""
+    with pdfplumber.open(file) as pdf:
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                text += t + "\n"
+    return text.strip()
 
-DB_CONFIG = {
-    "host":     db_host,
-    "user":     db_user,
-    "password": db_pass,
-    "database": db_name,
-}
+def clean_text(text: str) -> str:
+    text = re.sub(r'\s+', ' ', text)
+    text = re.sub(r'[^\w\s]', ' ', text.lower())
+    return text.strip()
 
-# ── Helper functions ──────────────────────────────────────────────────────────
-def get_db_schema():
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute("SHOW TABLES")
-    tables = [row[0] for row in cursor.fetchall()]
-    schema_parts = []
-    for table in tables:
-        cursor.execute(f"DESCRIBE `{table}`")
-        cols = [f"  {row[0]} ({row[1]})" for row in cursor.fetchall()]
-        schema_parts.append(f"Table `{table}`:\n" + "\n".join(cols))
-    cursor.close()
-    conn.close()
-    return "\n\n".join(schema_parts)
+def get_match_score(jd_text: str, resume_text: str) -> float:
+    vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2))
+    tfidf = vectorizer.fit_transform([clean_text(jd_text), clean_text(resume_text)])
+    score = cosine_similarity(tfidf[0:1], tfidf[1:2])[0][0]
+    return round(float(score) * 100, 1)
 
-def ask_llama(system_prompt, user_message):
-    payload = {
-        "model": "bonsai",
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_message},
-        ],
-        "temperature": 0.1,
-        "max_tokens": 512,
-    }
-    resp = requests.post(llama_url, json=payload, timeout=60)
-    resp.raise_for_status()
-    return resp.json()["choices"][0]["message"]["content"].strip()
+def extract_keywords(text: str, top_n: int = 40) -> set:
+    vectorizer = TfidfVectorizer(stop_words='english', ngram_range=(1, 2), max_features=top_n)
+    vectorizer.fit([clean_text(text)])
+    return set(vectorizer.get_feature_names_out())
 
-def extract_sql(text):
-    m = re.search(r"```(?:sql)?\s*(.*?)```", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        return m.group(1).strip()
-    m = re.search(r"(SELECT|INSERT|UPDATE|DELETE|WITH)\b.*", text, re.DOTALL | re.IGNORECASE)
-    if m:
-        return m.group(0).strip()
-    return None
+def get_matched_missing(jd_text: str, resume_text: str):
+    jd_keywords  = extract_keywords(jd_text, top_n=40)
+    resume_clean = clean_text(resume_text)
+    matched  = sorted({kw for kw in jd_keywords if kw in resume_clean})
+    missing  = sorted(jd_keywords - set(matched))
+    return matched, missing
 
-def run_sql(sql):
-    conn = mysql.connector.connect(**DB_CONFIG)
-    cursor = conn.cursor()
-    cursor.execute(sql)
-    columns = [d[0] for d in cursor.description] if cursor.description else []
-    rows    = [list(r) for r in cursor.fetchall()]
-    cursor.close()
-    conn.close()
-    return columns, rows
+def generate_suggestions(missing_keywords: list, score: float) -> list:
+    suggestions = []
+    if score < 40:
+        suggestions.append("Low overlap with the JD — consider rewriting your resume targeting this role specifically.")
+    elif score < 55:
+        suggestions.append("Moderate match — tailor your resume more to this job's requirements.")
+    else:
+        suggestions.append("Good match! A few targeted tweaks can push you to the top of the applicant pool.")
+    if missing_keywords:
+        top = ', '.join(missing_keywords[:6])
+        suggestions.append(f"Add these missing keywords naturally into your resume: {top}.")
+    suggestions.append("Use quantifiable achievements (e.g. 'Increased sales by 30%') rather than generic duties.")
+    suggestions.append("Mirror the exact language and terminology used in the job description.")
+    suggestions.append("Ensure your skills section lists all tools/technologies mentioned in the JD.")
+    return suggestions
 
-# ── Schema viewer ─────────────────────────────────────────────────────────────
-col1, col2 = st.columns([3, 1])
-with col2:
-    if st.button("📋 Show Schema", use_container_width=True):
-        try:
-            schema = get_db_schema()
-            st.code(schema, language="sql")
-        except Exception as e:
-            st.error(f"DB connection failed: {e}")
+def classify(score: float):
+    return ("✅ Fit", True) if score >= 55 else ("❌ Not Fit", False)
 
-# ── Query input ───────────────────────────────────────────────────────────────
-with col1:
-    question = st.text_input(
-        "Ask a question about your database",
-        placeholder="e.g. How many users signed up last month?",
+# ── Input layout ───────────────────────────────────────────────────────────────
+col_left, col_right = st.columns(2, gap="large")
+
+with col_left:
+    st.markdown('<div class="card"><div class="card-title">📋 Job Description</div>', unsafe_allow_html=True)
+    job_description = st.text_area(
+        "Job Description",
+        height=280,
+        placeholder="Paste the full job description here...",
         label_visibility="collapsed"
     )
+    st.markdown('</div>', unsafe_allow_html=True)
 
-# ── Run query ─────────────────────────────────────────────────────────────────
-if st.button("🔍 Run Query", use_container_width=False):
-    if not question.strip():
-        st.warning("Please enter a question!")
-    elif not db_name:
-        st.warning("Please enter your database name in the sidebar!")
+with col_right:
+    st.markdown('<div class="card"><div class="card-title">📄 Upload Resume (PDF)</div>', unsafe_allow_html=True)
+    uploaded_resume = st.file_uploader(
+        "Upload Resume PDF",
+        type=["pdf"],
+        label_visibility="collapsed"
+    )
+    if uploaded_resume:
+        st.success(f"✅ Uploaded: {uploaded_resume.name}")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Analyse button ─────────────────────────────────────────────────────────────
+_, btn_col, _ = st.columns([1, 2, 1])
+with btn_col:
+    analyse = st.button("🔍 Analyse Resume")
+
+# ── Results ────────────────────────────────────────────────────────────────────
+if analyse:
+    if not job_description.strip():
+        st.warning("⚠️ Please paste a job description!")
+    elif not uploaded_resume:
+        st.warning("⚠️ Please upload a resume PDF!")
     else:
-        with st.spinner("Thinking..."):
-            try:
-                # Step 1 — get schema
-                schema_text = get_db_schema()
+        with st.spinner("Analysing resume..."):
+            resume_text = extract_text_from_pdf(uploaded_resume)
+            if not resume_text.strip():
+                st.error("❌ Could not extract text. Make sure it's a text-based PDF, not a scanned image.")
+                st.stop()
+            score            = get_match_score(job_description, resume_text)
+            matched, missing = get_matched_missing(job_description, resume_text)
+            label, is_fit    = classify(score)
+            suggestions      = generate_suggestions(missing, score)
 
-                # Step 2 — generate SQL
-                sql_system = (
-                    "You are an expert SQL assistant. "
-                    "Given the database schema below and a user question, "
-                    "write a single valid MySQL SELECT query that answers it. "
-                    "Return ONLY the SQL query inside a ```sql block, nothing else.\n\n"
-                    f"Schema:\n{schema_text}"
-                )
-                sql_response = ask_llama(sql_system, question)
-                sql = extract_sql(sql_response)
+        st.markdown("---")
 
-                if not sql:
-                    st.error("Could not extract SQL from model response.")
-                    st.code(sql_response)
-                else:
-                    # Step 3 — run SQL
-                    st.markdown("**Generated SQL:**")
-                    st.markdown(f'<div class="sql-box">{sql}</div>', unsafe_allow_html=True)
+        # Verdict
+        rc = "result-fit" if is_fit else "result-notfit"
+        fc = "#aff5b4" if is_fit else "#ffa198"
+        st.markdown(f"""
+        <div class="{rc}">
+          <div class="result-label" style="color:{fc}">{label}</div>
+          <div class="result-sub">This resume is {"a strong match" if is_fit else "not a strong match"} for the job description</div>
+        </div>""", unsafe_allow_html=True)
 
-                    columns, rows = run_sql(sql)
+        # Metrics
+        bc = "#238636" if score >= 55 else "#da3633"
+        st.markdown(f"""
+        <div class="metric-row">
+          <div class="metric-box">
+            <div class="metric-val" style="color:{bc}">{score}%</div>
+            <div class="metric-label">Match Score</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-val">{len(matched)}</div>
+            <div class="metric-label">Keywords Matched</div>
+          </div>
+          <div class="metric-box">
+            <div class="metric-val" style="color:#ffa198">{len(missing)}</div>
+            <div class="metric-label">Keywords Missing</div>
+          </div>
+        </div>
+        <div class="score-bar-bg">
+          <div class="score-bar-fill" style="width:{min(score,100)}%; background:{bc};"></div>
+        </div>""", unsafe_allow_html=True)
 
-                    # Step 4 — explain results
-                    results_text = json.dumps({"columns": columns, "rows": rows[:20]}, indent=2)
-                    explain_system = (
-                        "You are a helpful data analyst. "
-                        "Explain the following query results in clear, plain English. "
-                        "Be concise (3-5 sentences). Mention key numbers or trends."
-                    )
-                    explain_prompt = (
-                        f"User asked: {question}\n\n"
-                        f"SQL used:\n{sql}\n\n"
-                        f"Results (first 20 rows):\n{results_text}"
-                    )
-                    explanation = ask_llama(explain_system, explain_prompt)
+        # Keywords
+        kw1, kw2 = st.columns(2, gap="large")
+        with kw1:
+            st.markdown("**✅ Matched Keywords**")
+            if matched:
+                st.markdown("".join([f'<span class="skill-chip chip-match">{kw}</span>' for kw in matched[:20]]), unsafe_allow_html=True)
+            else:
+                st.info("No matching keywords found.")
+        with kw2:
+            st.markdown("**❌ Missing Keywords**")
+            if missing:
+                st.markdown("".join([f'<span class="skill-chip chip-missing">{kw}</span>' for kw in missing[:20]]), unsafe_allow_html=True)
+            else:
+                st.success("No missing keywords — great coverage!")
 
-                    st.markdown("**Explanation:**")
-                    st.markdown(f'<div class="explain-box">{explanation}</div>', unsafe_allow_html=True)
-
-                    st.markdown("**Results:**")
-                    if rows:
-                        import pandas as pd
-                        df = pd.DataFrame(rows, columns=columns)
-                        st.dataframe(df, use_container_width=True)
-                    else:
-                        st.info("No results returned.")
-
-            except mysql.connector.Error as e:
-                st.error(f"❌ Database error: {e}")
-            except requests.exceptions.ConnectionError:
-                st.error("❌ Cannot connect to Ollama. Make sure it's running on port 8081.")
-            except Exception as e:
-                st.error(f"❌ Error: {e}")
+        # Suggestions
+        st.markdown("<br>**💡 Suggestions to Improve Your Resume**", unsafe_allow_html=True)
+        for s in suggestions:
+            st.markdown(f'<div class="suggestion-item">→ {s}</div>', unsafe_allow_html=True)
