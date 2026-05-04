@@ -1,4 +1,3 @@
-flask
-flask-cors
-mysql-connector-python
-requests
+streamlit
+pdfplumber
+scikit-learn
