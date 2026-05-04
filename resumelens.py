@@ -106,7 +106,7 @@ textarea {
 st.markdown("""
 <div class="hero">
   <div class="hero-title">🔍 ResumeLens</div>
-  <div class="hero-sub">// AI-POWERED RESUME SCREENING · INSTANT JOB FIT ANALYSIS</div>
+  <div class="hero-sub">AI-POWERED RESUME SCREENING · INSTANT JOB FIT ANALYSIS</div>
 </div>
 """, unsafe_allow_html=True)
 
